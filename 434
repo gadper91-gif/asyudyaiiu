@@ -1,0 +1,1011 @@
+
+-- Совместимо с Rayfield UI
+
+--[[
+   Установка Rayfield:
+   1. Скачать Rayfield Interface Suite
+   2. Добавить в начало скрипта: loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local StatsService = game:GetService("Stats")
+
+local localPlayer = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+-- Настройки по умолчанию (только те, что сохраняются)
+local DEFAULT_SETTINGS = {
+    AIM_KEY = Enum.UserInputType.MouseButton2,
+    AIM_PART = "HumanoidRootPart",
+    MAX_DISTANCE = 65,
+    FOV_ANGLE = 70,
+    MAX_RADIUS = 200,
+    PRIORITIZE_LIMBS = true,
+    SHOW_RADIUS_CIRCLE = true,
+    CIRCLE_TRANSPARENCY = 0.7,
+    OBSTACLE_CHECK = true,
+    CAMERA_FOV = 70,
+    CROSSHAIR_ENABLED = true
+}
+
+-- Имя файла для сохранения настроек
+local SETTINGS_FILENAME = "aimlock_settings.json"
+
+-- Переменные
+local SETTINGS = {}
+local isAiming = false
+local aimConnection = nil
+local currentCrosshair = nil
+local watermark = nil
+local mouse = localPlayer:GetMouse()
+local connections = {}
+local createdObjects = {}
+local me = Players.LocalPlayer
+
+-- Состояния функций (не сохраняются)
+local respawnToggle = false
+local antiLagToggle = false
+
+-- Горячие клавиши (фиксированные, не сохраняются)
+local ANTI_LAG_KEY = Enum.KeyCode.Y
+local LOOP_RESET_KEY = Enum.KeyCode.T
+
+-- Фиолетовый цвет для Rayfield
+local PURPLE_COLOR = Color3.fromRGB(182, 39, 246)
+
+-- Функции для сохранения и загрузки настроек
+function saveSettings()
+    local success, result = pcall(function()
+        local saveData = {
+            MAX_DISTANCE = SETTINGS.MAX_DISTANCE,
+            FOV_ANGLE = SETTINGS.FOV_ANGLE,
+            MAX_RADIUS = SETTINGS.MAX_RADIUS,
+            PRIORITIZE_LIMBS = SETTINGS.PRIORITIZE_LIMBS,
+            SHOW_RADIUS_CIRCLE = SETTINGS.SHOW_RADIUS_CIRCLE,
+            CIRCLE_TRANSPARENCY = SETTINGS.CIRCLE_TRANSPARENCY,
+            OBSTACLE_CHECK = SETTINGS.OBSTACLE_CHECK,
+            CAMERA_FOV = SETTINGS.CAMERA_FOV,
+            CROSSHAIR_ENABLED = SETTINGS.CROSSHAIR_ENABLED
+        }
+        
+        local jsonData = HttpService:JSONEncode(saveData)
+        if writefile then
+            writefile(SETTINGS_FILENAME, jsonData)
+            return true
+        else
+            print("❌ writefile not available")
+            return false
+        end
+    end)
+    
+    if not success then
+        warn("Failed to save settings: " .. tostring(result))
+        return false
+    end
+    
+    return true
+end
+
+function loadSettings()
+    local success, result = pcall(function()
+        if not isfile or not isfile(SETTINGS_FILENAME) then
+            return nil
+        end
+        
+        local jsonData = readfile(SETTINGS_FILENAME)
+        local loadedSettings = HttpService:JSONDecode(jsonData)
+        
+        local mergedSettings = {}
+        for key, value in pairs(DEFAULT_SETTINGS) do
+            mergedSettings[key] = loadedSettings[key] or value
+        end
+        
+        return mergedSettings
+    end)
+    
+    if not success then
+        warn("Failed to load settings: " .. tostring(result))
+        return nil
+    end
+    
+    return result
+end
+
+-- Инициализация настроек
+local loadedSettings = loadSettings()
+if loadedSettings then
+    SETTINGS = loadedSettings
+    if SETTINGS.CAMERA_FOV then
+        camera.FieldOfView = SETTINGS.CAMERA_FOV
+        SETTINGS.FOV_ANGLE = SETTINGS.CAMERA_FOV
+    end
+    print("💾 Settings loaded from file!")
+else
+    SETTINGS = DEFAULT_SETTINGS
+    print("⚙️ Using default settings")
+end
+
+-- Функция для получения пинга
+function getPing()
+    local stats = StatsService:FindFirstChild("PerformanceStats")
+    if stats then
+        local pingStat = stats:FindFirstChild("Ping")
+        if pingStat then
+            return math.floor(pingStat:GetValue())
+        end
+    end
+    return 0
+end
+
+-- Водяной знак (всегда включен)
+function createWatermark()
+    if watermark then
+        watermark.Gui:Destroy()
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AimlockWatermark"
+    screenGui.Parent = game.CoreGui
+    screenGui.ResetOnSpawn = false
+    
+    table.insert(createdObjects, screenGui)
+    
+    local watermarkFrame = Instance.new("Frame")
+    watermarkFrame.Size = UDim2.new(0, 250, 0, 35)
+    watermarkFrame.Position = UDim2.new(0, 10, 1, -45)
+    watermarkFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+    watermarkFrame.BackgroundTransparency = 0.7
+    watermarkFrame.BorderSizePixel = 0
+    watermarkFrame.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = watermarkFrame
+    
+    local watermarkLabel = Instance.new("TextLabel")
+    watermarkLabel.Size = UDim2.new(0, 140, 1, 0)
+    watermarkLabel.Position = UDim2.new(0, 5, 0, 0)
+    watermarkLabel.BackgroundTransparency = 1
+    watermarkLabel.TextColor3 = Color3.new(1, 1, 1)
+    watermarkLabel.Text = "Aimlock by slrNova"
+    watermarkLabel.Font = Enum.Font.GothamBold
+    watermarkLabel.TextSize = 14
+    watermarkLabel.TextXAlignment = Enum.TextXAlignment.Left
+    watermarkLabel.TextYAlignment = Enum.TextYAlignment.Center
+    watermarkLabel.Parent = watermarkFrame
+    
+    local separatorLabel = Instance.new("TextLabel")
+    separatorLabel.Size = UDim2.new(0, 20, 1, 0)
+    separatorLabel.Position = UDim2.new(0, 145, 0, 0)
+    separatorLabel.BackgroundTransparency = 1
+    separatorLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+    separatorLabel.Text = "|"
+    separatorLabel.Font = Enum.Font.GothamBold
+    separatorLabel.TextSize = 14
+    separatorLabel.TextXAlignment = Enum.TextXAlignment.Center
+    separatorLabel.TextYAlignment = Enum.TextYAlignment.Center
+    separatorLabel.Parent = watermarkFrame
+    
+    local pingLabel = Instance.new("TextLabel")
+    pingLabel.Size = UDim2.new(0, 80, 1, 0)
+    pingLabel.Position = UDim2.new(0, 165, 0, 0)
+    pingLabel.BackgroundTransparency = 1
+    pingLabel.TextColor3 = Color3.new(1, 1, 1)
+    pingLabel.Text = "Ping: 0ms"
+    pingLabel.Font = Enum.Font.GothamBold
+    pingLabel.TextSize = 14
+    pingLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pingLabel.TextYAlignment = Enum.TextYAlignment.Center
+    pingLabel.Parent = watermarkFrame
+    
+    -- Обновление пинга
+    local lastPingUpdate = 0
+    local pingConnection
+    pingConnection = RunService.Heartbeat:Connect(function()
+        if tick() - lastPingUpdate >= 0.5 then
+            lastPingUpdate = tick()
+            if pingLabel and pingLabel.Parent then
+                local ping = getPing()
+                -- Измененные значения цвета пинга (+35 к каждому)
+                if ping < 85 then -- было < 50
+                    pingLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+                elseif ping < 135 then -- было < 100
+                    pingLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+                else
+                    pingLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+                end
+                pingLabel.Text = "Ping: " .. ping .. "ms"
+            else
+                if pingConnection then
+                    pingConnection:Disconnect()
+                end
+            end
+        end
+    end)
+    
+    table.insert(connections, pingConnection)
+    
+    watermark = {
+        Gui = screenGui,
+        Frame = watermarkFrame,
+        Label = watermarkLabel,
+        PingLabel = pingLabel
+    }
+    
+    return watermark
+end
+
+function updateWatermarkColor()
+    if not watermark or not watermark.Label then 
+        createWatermark()
+        return 
+    end
+    
+    if isAiming then
+        watermark.Label.TextColor3 = PURPLE_COLOR
+    else
+        watermark.Label.TextColor3 = Color3.new(1, 1, 1)
+    end
+end
+
+function removeWatermark()
+    if watermark then
+        watermark.Gui:Destroy()
+        watermark = nil
+    end
+end
+
+-- Прицел
+function createCrosshair()
+    if not SETTINGS.CROSSHAIR_ENABLED then return end
+    
+    if currentCrosshair then
+        currentCrosshair:Destroy()
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AimlockCrosshair"
+    screenGui.Parent = game.CoreGui
+    screenGui.ResetOnSpawn = false
+
+    table.insert(createdObjects, screenGui)
+    
+    local centerDot = Instance.new("Frame")
+    centerDot.Size = UDim2.new(0, 6, 0, 6)
+    centerDot.AnchorPoint = Vector2.new(0.5, 0.5)
+    centerDot.BackgroundColor3 = PURPLE_COLOR
+    centerDot.BorderSizePixel = 0
+    centerDot.ZIndex = 999
+
+    local dotConnection
+    dotConnection = RunService.RenderStepped:Connect(function()
+        if centerDot and centerDot.Parent then
+            local mousePos = Vector2.new(mouse.X, mouse.Y)
+            centerDot.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
+        else
+            dotConnection:Disconnect()
+        end
+    end)
+    
+    table.insert(connections, dotConnection)
+    centerDot.Parent = screenGui
+
+    if SETTINGS.SHOW_RADIUS_CIRCLE then
+        local radiusCircle = Instance.new("Frame")
+        radiusCircle.Size = UDim2.new(0, SETTINGS.MAX_RADIUS * 2, 0, SETTINGS.MAX_RADIUS * 2)
+        radiusCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+        radiusCircle.BackgroundColor3 = Color3.new(1, 1, 1)
+        radiusCircle.BackgroundTransparency = 1
+        radiusCircle.BorderSizePixel = 2
+        radiusCircle.BorderColor3 = PURPLE_COLOR
+        radiusCircle.BorderMode = Enum.BorderMode.Outline
+        radiusCircle.ZIndex = 998
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = PURPLE_COLOR
+        stroke.Thickness = 2
+        stroke.Transparency = SETTINGS.CIRCLE_TRANSPARENCY
+        stroke.Parent = radiusCircle
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(1, 0)
+        corner.Parent = radiusCircle
+
+        local circleConnection
+        circleConnection = RunService.RenderStepped:Connect(function()
+            if radiusCircle and radiusCircle.Parent then
+                local mousePos = Vector2.new(mouse.X, mouse.Y)
+                radiusCircle.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
+            else
+                circleConnection:Disconnect()
+            end
+        end)
+        
+        table.insert(connections, circleConnection)
+        radiusCircle.Parent = screenGui
+    end
+
+    currentCrosshair = screenGui
+    return screenGui
+end
+
+function removeCrosshair()
+    if currentCrosshair then
+        currentCrosshair:Destroy()
+        currentCrosshair = nil
+    end
+end
+
+-- Функции для прицеливания
+function getAngleBetween(v1, v2)
+    local dot = v1.Unit:Dot(v2.Unit)
+    dot = math.clamp(dot, -1, 1)
+    return math.deg(math.acos(dot))
+end
+
+function hasClearLineOfSight(origin, targetPart)
+    if not SETTINGS.OBSTACLE_CHECK then
+        return true
+    end
+    
+    local direction = (targetPart.Position - origin).Unit
+    local distance = (targetPart.Position - origin).Magnitude
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {localPlayer.Character, targetPart.Parent}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    raycastParams.IgnoreWater = true
+    
+    local raycastResult = Workspace:Raycast(origin, direction * distance, raycastParams)
+    
+    if raycastResult then
+        local hitParent = raycastResult.Instance:FindFirstAncestorOfClass("Model")
+        if hitParent ~= targetPart.Parent then
+            return false
+        end
+    end
+    
+    return true
+end
+
+function findBestTarget()
+    local bestTarget = nil
+    local mousePos = Vector2.new(mouse.X, mouse.Y)
+    local localCharacter = localPlayer.Character
+    local localHead = localCharacter and localCharacter:FindFirstChild("Head")
+    local rayOrigin = localHead and localHead.Position or camera.CFrame.Position
+
+    local validTargets = {}
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == localPlayer then continue end
+        
+        local character = player.Character
+        if not character then continue end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+
+        local targetParts = {}
+        
+        if SETTINGS.PRIORITIZE_LIMBS then
+            local leftLeg = character:FindFirstChild("Left Leg")
+            local rightLeg = character:FindFirstChild("Right Leg")
+            local leftArm = character:FindFirstChild("Left Arm")
+            local rightArm = character:FindFirstChild("Right Arm")
+            local headPart = character:FindFirstChild("Head")
+            local bodyPart = character:FindFirstChild("HumanoidRootPart") or 
+                            character:FindFirstChild("UpperTorso")
+            
+            if leftLeg then table.insert(targetParts, {Part = leftLeg, Type = "LEG", Priority = 4}) end
+            if rightLeg then table.insert(targetParts, {Part = rightLeg, Type = "LEG", Priority = 4}) end
+            if leftArm then table.insert(targetParts, {Part = leftArm, Type = "ARM", Priority = 3}) end
+            if rightArm then table.insert(targetParts, {Part = rightArm, Type = "ARM", Priority = 3}) end
+            if headPart then table.insert(targetParts, {Part = headPart, Type = "HEAD", Priority = 2}) end
+            if bodyPart then table.insert(targetParts, {Part = bodyPart, Type = "BODY", Priority = 1}) end
+        else
+            local headPart = character:FindFirstChild("Head")
+            local bodyPart = character:FindFirstChild("HumanoidRootPart") or 
+                            character:FindFirstChild("UpperTorso")
+            
+            if headPart then table.insert(targetParts, {Part = headPart, Type = "HEAD", Priority = 2}) end
+            if bodyPart then table.insert(targetParts, {Part = bodyPart, Type = "BODY", Priority = 1}) end
+        end
+        
+        for _, targetInfo in ipairs(targetParts) do
+            local targetPart = targetInfo.Part
+
+            local distance3D = (rayOrigin - targetPart.Position).Magnitude
+            if distance3D > SETTINGS.MAX_DISTANCE then continue end
+
+            local cameraLook = camera.CFrame.LookVector
+            local toTarget = (targetPart.Position - camera.CFrame.Position)
+            local angle = getAngleBetween(cameraLook, toTarget)
+            
+            if angle > SETTINGS.FOV_ANGLE / 2 then continue end
+
+            local screenPoint, onScreen = camera:WorldToScreenPoint(targetPart.Position)
+            if not onScreen then continue end
+
+            local screenPos = Vector2.new(screenPoint.X, screenPoint.Y)
+            local distanceToCursor = (screenPos - mousePos).Magnitude
+
+            if distanceToCursor > SETTINGS.MAX_RADIUS then continue end
+
+            table.insert(validTargets, {
+                Part = targetPart,
+                Player = player,
+                DistanceToCursor = distanceToCursor,
+                Distance3D = distance3D,
+                ScreenPosition = screenPos,
+                Angle = angle,
+                Type = targetInfo.Type,
+                Priority = targetInfo.Priority
+            })
+        end
+    end
+    
+    if #validTargets == 0 then
+        return nil
+    end
+
+    table.sort(validTargets, function(a, b)
+        if a.DistanceToCursor ~= b.DistanceToCursor then
+            return a.DistanceToCursor < b.DistanceToCursor
+        end
+        
+        if SETTINGS.PRIORITIZE_LIMBS and a.Priority ~= b.Priority then
+            return a.Priority > b.Priority
+        end
+        
+        return a.Distance3D < b.Distance3D
+    end)
+    
+    bestTarget = validTargets[1]
+    
+    if SETTINGS.OBSTACLE_CHECK then
+        if bestTarget.Type == "LEG" or bestTarget.Type == "ARM" then
+            if not hasClearLineOfSight(rayOrigin, bestTarget.Part) then
+                for i = 2, #validTargets do
+                    local nextTarget = validTargets[i]
+                    if nextTarget.Type == "HEAD" or nextTarget.Type == "BODY" or 
+                       hasClearLineOfSight(rayOrigin, nextTarget.Part) then
+                        bestTarget = nextTarget
+                        bestTarget.HasObstacle = false
+                        break
+                    end
+                end
+            else
+                bestTarget.HasObstacle = false
+            end
+        else
+            bestTarget.HasObstacle = false
+        end
+    else
+        bestTarget.HasObstacle = false
+    end
+    
+    return bestTarget
+end
+
+function aimAtTarget()
+    local targetInfo = findBestTarget()
+    if not targetInfo then return end
+
+    camera.CFrame = CFrame.new(camera.CFrame.Position, targetInfo.Part.Position)
+end
+
+-- Функция для Anti Lag
+local function toggleAntiLag()
+    antiLagToggle = not antiLagToggle
+    local scriptObj = localPlayer.PlayerScripts:FindFirstChild("CharacterAndBeamMove")
+    if scriptObj then
+        scriptObj.Enabled = not scriptObj.Enabled
+        
+        -- Поменяны местами тексты Enabled и Disabled
+        local statusText = scriptObj.Enabled and "Disabled" or "Enabled"
+        
+        print("Anti Lag:", statusText)
+        Rayfield:Notify({
+            Title = "Anti Lag",
+            Content = statusText,
+            Duration = 2,
+            Image = 4483362458
+        })
+    else
+        print("❌ CharacterAndBeamMove not found in PlayerScripts")
+        Rayfield:Notify({
+            Title = "Error",
+            Content = "CharacterAndBeamMove not found",
+            Duration = 2,
+            Image = 4483362458
+        })
+    end
+end
+
+-- Функция для Loop Reset
+local function toggleLoopReset()
+    respawnToggle = not respawnToggle
+    print("Loop Reset:", respawnToggle and "ON" or "OFF")
+    Rayfield:Notify({
+        Title = "Loop Reset",
+        Content = respawnToggle and "Enabled" or "Disabled",
+        Duration = 2,
+        Image = 4483362458
+    })
+    
+    -- Запускаем отдельный поток для респавн-лупа
+    if respawnToggle then
+        spawn(function()
+            while respawnToggle and task.wait() do
+                local Char = me.Character or me.CharacterAdded:Wait()
+                local Hum = Char and Char:FindFirstChild("Humanoid")
+                if Hum then
+                    Hum.Health = 0
+                end
+            end
+        end)
+    end
+end
+
+-- Функции для горячих клавиш
+local function setupHotkeys()
+    local hotkeyConnection
+    hotkeyConnection = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+
+        if input.KeyCode == ANTI_LAG_KEY then
+            toggleAntiLag()
+        elseif input.KeyCode == LOOP_RESET_KEY then
+            toggleLoopReset()
+        end
+    end)
+    
+    table.insert(connections, hotkeyConnection)
+    return hotkeyConnection
+end
+
+-- Rayfield UI
+local Window = Rayfield:CreateWindow({
+    Name = "Aimlock by slrNova",
+    LoadingTitle = "Loading Aimlock...",
+    LoadingSubtitle = "by slrNova",
+    ConfigurationSaving = {
+        Enabled = false
+    },
+    Discord = {
+        Enabled = false
+    },
+    KeySystem = false,
+    KeySettings = {
+        Title = "Aimlock",
+        Subtitle = "Key System",
+        Note = "No key required",
+        FileName = "Key",
+        SaveKey = true,
+        GrabKeyFromSite = false,
+        Key = "Hello"
+    }
+})
+
+-- Главная вкладка
+local MainTab = Window:CreateTab("Main", 4483362458)
+
+MainTab:CreateSection("Aimlock Control")
+
+local Toggle2 = MainTab:CreateToggle({
+    Name = "Enable Crosshair",
+    CurrentValue = SETTINGS.CROSSHAIR_ENABLED,
+    Flag = "CrosshairToggle",
+    Callback = function(Value)
+        SETTINGS.CROSSHAIR_ENABLED = Value
+        if not Value and currentCrosshair then
+            removeCrosshair()
+        end
+        saveSettings()
+    end,
+})
+
+MainTab:CreateSection("Aim Settings")
+
+local Slider = MainTab:CreateSlider({
+    Name = "Aim Radius",
+    Range = {50, 500},
+    Increment = 10,
+    Suffix = "px",
+    CurrentValue = SETTINGS.MAX_RADIUS,
+    Flag = "AimRadius",
+    Callback = function(Value)
+        SETTINGS.MAX_RADIUS = Value
+        if isAiming and SETTINGS.CROSSHAIR_ENABLED then
+            createCrosshair()
+        end
+        saveSettings()
+    end,
+})
+
+local Slider2 = MainTab:CreateSlider({
+    Name = "Max Distance",
+    Range = {20, 200},
+    Increment = 5,
+    Suffix = "studs",
+    CurrentValue = SETTINGS.MAX_DISTANCE,
+    Flag = "MaxDistance",
+    Callback = function(Value)
+        SETTINGS.MAX_DISTANCE = Value
+        saveSettings()
+    end,
+})
+
+local Slider3 = MainTab:CreateSlider({
+    Name = "Camera & Aim FOV",
+    Range = {1, 120},
+    Increment = 1,
+    Suffix = "°",
+    CurrentValue = SETTINGS.CAMERA_FOV,
+    Flag = "CameraFOV",
+    Callback = function(Value)
+        SETTINGS.CAMERA_FOV = Value
+        SETTINGS.FOV_ANGLE = Value
+        camera.FieldOfView = Value
+        saveSettings()
+    end,
+})
+
+-- Вкладка настроек
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+
+SettingsTab:CreateSection("Hotkey Controls")
+
+local AntiLagButton = SettingsTab:CreateButton({
+    Name = "Toggle Anti Lag (Y)",
+    Callback = function()
+        toggleAntiLag()
+    end,
+})
+
+local LoopResetButton = SettingsTab:CreateButton({
+    Name = "Toggle Loop Reset (T)",
+    Callback = function()
+        toggleLoopReset()
+    end,
+})
+
+SettingsTab:CreateSection("Visual Settings")
+
+local Toggle3 = SettingsTab:CreateToggle({
+    Name = "Show Radius Circle",
+    CurrentValue = SETTINGS.SHOW_RADIUS_CIRCLE,
+    Flag = "RadiusCircleToggle",
+    Callback = function(Value)
+        SETTINGS.SHOW_RADIUS_CIRCLE = Value
+        if isAiming and SETTINGS.CROSSHAIR_ENABLED then
+            createCrosshair()
+        end
+        saveSettings()
+    end,
+})
+
+local Slider6 = SettingsTab:CreateSlider({
+    Name = "Circle Transparency",
+    Range = {0, 1},
+    Increment = 0.1,
+    CurrentValue = SETTINGS.CIRCLE_TRANSPARENCY,
+    Flag = "CircleTransparency",
+    Callback = function(Value)
+        SETTINGS.CIRCLE_TRANSPARENCY = Value
+        if isAiming and SETTINGS.CROSSHAIR_ENABLED then
+            createCrosshair()
+        end
+        saveSettings()
+    end,
+})
+
+SettingsTab:CreateSection("Targeting Settings")
+
+local Toggle4 = SettingsTab:CreateToggle({
+    Name = "Prioritize Limbs",
+    CurrentValue = SETTINGS.PRIORITIZE_LIMBS,
+    Flag = "PrioritizeLimbs",
+    Callback = function(Value)
+        SETTINGS.PRIORITIZE_LIMBS = Value
+        saveSettings()
+    end,
+})
+
+local Toggle5 = SettingsTab:CreateToggle({
+    Name = "Obstacle Check",
+    CurrentValue = SETTINGS.OBSTACLE_CHECK,
+    Flag = "ObstacleCheck",
+    Callback = function(Value)
+        SETTINGS.OBSTACLE_CHECK = Value
+        saveSettings()
+    end,
+})
+
+-- Вкладка информации
+local InfoTab = Window:CreateTab("Info", 4483362458)
+
+InfoTab:CreateSection("Instructions")
+
+InfoTab:CreateLabel("Hold RMB to activate aimlock")
+InfoTab:CreateLabel("Targets within the radius will be locked")
+InfoTab:CreateLabel("Adjust settings for optimal performance")
+InfoTab:CreateLabel("Y: Toggle Anti Lag")
+InfoTab:CreateLabel("T: Toggle Loop Reset")
+
+InfoTab:CreateSection("Current Settings")
+
+local statusLabel = InfoTab:CreateLabel("Status: Ready")
+local pingLabel = InfoTab:CreateLabel("Ping: 0ms")
+local targetsLabel = InfoTab:CreateLabel("Targets in range: 0")
+local antiLagStatus = InfoTab:CreateLabel("Anti Lag: OFF")
+local loopResetStatus = InfoTab:CreateLabel("Loop Reset: OFF")
+
+-- Обновление информации
+local infoConnection
+infoConnection = RunService.Heartbeat:Connect(function()
+    local ping = getPing()
+    pingLabel:Set("Ping: " .. ping .. "ms")
+    
+    if isAiming then
+        statusLabel:Set("Status: AIMING")
+    else
+        statusLabel:Set("Status: IDLE")
+    end
+    
+    -- Обновляем статусы функций (по умолчанию всегда OFF)
+    local scriptObj = localPlayer.PlayerScripts:FindFirstChild("CharacterAndBeamMove")
+    if scriptObj then
+        -- Инвертированное отображение статуса для Anti Lag
+        local antiLagDisplayStatus = scriptObj.Enabled and "OFF" or "ON"
+        antiLagStatus:Set("Anti Lag: " .. antiLagDisplayStatus)
+    else
+        antiLagStatus:Set("Anti Lag: NOT FOUND")
+    end
+    
+    loopResetStatus:Set("Loop Reset: " .. (respawnToggle and "ON" or "OFF"))
+    
+    -- Подсчет целей в радиусе
+    local targetCount = 0
+    if localPlayer.Character then
+        local localHead = localPlayer.Character:FindFirstChild("Head")
+        local rayOrigin = localHead and localHead.Position or camera.CFrame.Position
+        
+        for _, player in pairs(Players:GetPlayers()) do
+            if player == localPlayer then continue end
+            
+            local character = player.Character
+            if not character then continue end
+            
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if not humanoid or humanoid.Health <= 0 then continue end
+            
+            local targetPart = character:FindFirstChild("HumanoidRootPart") or 
+                              character:FindFirstChild("Head")
+            
+            if targetPart then
+                local distance3D = (rayOrigin - targetPart.Position).Magnitude
+                if distance3D <= SETTINGS.MAX_DISTANCE then
+                    targetCount = targetCount + 1
+                end
+            end
+        end
+    end
+    
+    targetsLabel:Set("Targets in range: " .. targetCount)
+end)
+
+table.insert(connections, infoConnection)
+
+-- Функции управления
+local inputBeganConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.UserInputType == SETTINGS.AIM_KEY then
+        isAiming = true
+        updateWatermarkColor()
+        
+        if SETTINGS.CROSSHAIR_ENABLED then
+            createCrosshair()
+        end
+
+        aimConnection = RunService.RenderStepped:Connect(function()
+            if isAiming then
+                aimAtTarget()
+            end
+        end)
+        
+        table.insert(connections, aimConnection)
+    end
+end)
+
+table.insert(connections, inputBeganConnection)
+
+local inputEndedConnection = UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.UserInputType == SETTINGS.AIM_KEY then
+        isAiming = false
+        updateWatermarkColor()
+        
+        if aimConnection then
+            aimConnection:Disconnect()
+            aimConnection = nil
+        end
+
+        removeCrosshair()
+    end
+end)
+
+table.insert(connections, inputEndedConnection)
+
+-- Настройка горячих клавиш
+local hotkeyConnection = setupHotkeys()
+
+-- Кнопка сброса
+SettingsTab:CreateSection("Management")
+
+local Button = SettingsTab:CreateButton({
+    Name = "Reset to Defaults",
+    Callback = function()
+        SETTINGS = DEFAULT_SETTINGS
+        camera.FieldOfView = SETTINGS.CAMERA_FOV
+        SETTINGS.FOV_ANGLE = SETTINGS.CAMERA_FOV
+        
+        -- Обновляем UI элементы
+        Rayfield.Flags["CrosshairToggle"]:Set(SETTINGS.CROSSHAIR_ENABLED)
+        Rayfield.Flags["AimRadius"]:Set(SETTINGS.MAX_RADIUS)
+        Rayfield.Flags["MaxDistance"]:Set(SETTINGS.MAX_DISTANCE)
+        Rayfield.Flags["CameraFOV"]:Set(SETTINGS.CAMERA_FOV)
+        Rayfield.Flags["RadiusCircleToggle"]:Set(SETTINGS.SHOW_RADIUS_CIRCLE)
+        Rayfield.Flags["CircleTransparency"]:Set(SETTINGS.CIRCLE_TRANSPARENCY)
+        Rayfield.Flags["PrioritizeLimbs"]:Set(SETTINGS.PRIORITIZE_LIMBS)
+        Rayfield.Flags["ObstacleCheck"]:Set(SETTINGS.OBSTACLE_CHECK)
+        
+        -- Пересоздаем водяной знак
+        createWatermark()
+        
+        saveSettings()
+        Rayfield:Notify({
+            Title = "Settings Reset",
+            Content = "All settings have been reset to defaults",
+            Duration = 3,
+            Image = 4483362458
+        })
+    end,
+})
+
+local Button2 = SettingsTab:CreateButton({
+    Name = "Save Settings",
+    Callback = function()
+        if saveSettings() then
+            Rayfield:Notify({
+                Title = "Settings Saved",
+                Content = "Your settings have been saved successfully",
+                Duration = 3,
+                Image = 4483362458
+            })
+        else
+            Rayfield:Notify({
+                Title = "Save Failed",
+                Content = "Failed to save settings",
+                Duration = 3,
+                Image = 4483362458
+            })
+        end
+    end,
+})
+
+local Button3 = SettingsTab:CreateButton({
+    Name = "Load Settings",
+    Callback = function()
+        local loaded = loadSettings()
+        if loaded then
+            SETTINGS = loaded
+            camera.FieldOfView = SETTINGS.CAMERA_FOV
+            SETTINGS.FOV_ANGLE = SETTINGS.CAMERA_FOV
+            
+            -- Обновляем UI элементы
+            Rayfield.Flags["CrosshairToggle"]:Set(SETTINGS.CROSSHAIR_ENABLED)
+            Rayfield.Flags["AimRadius"]:Set(SETTINGS.MAX_RADIUS)
+            Rayfield.Flags["MaxDistance"]:Set(SETTINGS.MAX_DISTANCE)
+            Rayfield.Flags["CameraFOV"]:Set(SETTINGS.CAMERA_FOV)
+            Rayfield.Flags["RadiusCircleToggle"]:Set(SETTINGS.SHOW_RADIUS_CIRCLE)
+            Rayfield.Flags["CircleTransparency"]:Set(SETTINGS.CIRCLE_TRANSPARENCY)
+            Rayfield.Flags["PrioritizeLimbs"]:Set(SETTINGS.PRIORITIZE_LIMBS)
+            Rayfield.Flags["ObstacleCheck"]:Set(SETTINGS.OBSTACLE_CHECK)
+            
+            -- Пересоздаем водяной знак
+            createWatermark()
+            
+            Rayfield:Notify({
+                Title = "Settings Loaded",
+                Content = "Settings have been loaded successfully",
+                Duration = 3,
+                Image = 4483362458
+            })
+        else
+            Rayfield:Notify({
+                Title = "Load Failed",
+                Content = "Failed to load settings",
+                Duration = 3,
+                Image = 4483362458
+            })
+        end
+    end,
+})
+
+local Button4 = SettingsTab:CreateButton({
+    Name = "Unload Aimlock",
+    Callback = function()
+        Rayfield:Notify({
+            Title = "Unloading",
+            Content = "Aimlock will be unloaded in 3 seconds...",
+            Duration = 3,
+            Image = 4483362458
+        })
+        
+        wait(3)
+        
+        -- Отключаем все соединения
+        for _, connection in ipairs(connections) do
+            if connection and typeof(connection) == "RBXScriptConnection" then
+                connection:Disconnect()
+            end
+        end
+        
+        -- Удаляем все созданные объекты
+        for _, obj in ipairs(createdObjects) do
+            if obj and obj.Parent then
+                obj:Destroy()
+            end
+        end
+        
+        -- Отключаем aim соединение
+        if aimConnection then
+            aimConnection:Disconnect()
+            aimConnection = nil
+        end
+        
+        -- Удаляем UI
+        Rayfield:Destroy()
+        
+        -- Удаляем водяной знак
+        removeWatermark()
+        
+        -- Удаляем прицел
+        removeCrosshair()
+        
+        -- Сбрасываем состояние
+        isAiming = false
+        respawnToggle = false
+        antiLagToggle = false
+        
+        print("✅ Aimlock by slrNova successfully unloaded!")
+    end,
+})
+
+-- Инициализация
+createWatermark() -- Водяной знак всегда создается при запуске
+
+-- Уведомление о загрузке
+Rayfield:Notify({
+    Title = "Aimlock by slrNova",
+    Content = "Successfully loaded!\nHold RMB to activate aimlock\nY: Toggle Anti Lag\nT: Toggle Loop Reset",
+    Duration = 5,
+    Image = 4483362458
+})
+
+print("🎯 Aimlock by slrNova LOADED!")
+print("💾 Settings: " .. (loadedSettings and "LOADED FROM FILE" or "DEFAULT"))
+print("Aim Radius: " .. SETTINGS.MAX_RADIUS .. "px")
+print("Camera FOV: " .. SETTINGS.CAMERA_FOV .. "°")
+print("Hold RMB to activate aimlock")
+print("Y: Toggle Anti Lag (Default: OFF)")
+print("T: Toggle Loop Reset (Default: OFF)")
+print("📊 Ping color thresholds: Green<85ms, Yellow<135ms, Red>=135ms")
